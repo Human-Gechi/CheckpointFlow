@@ -1,3 +1,4 @@
+# Importing necessary libraries
 import logging
 import sys
 from pathlib import Path
@@ -11,12 +12,15 @@ def setup_logger():
     if logger.handlers:
         return logger
 
+    # Log format
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
+    # Terminal logger
     terminal_handler = logging.StreamHandler(sys.stdout)
     terminal_handler.setLevel(logging.INFO)
     terminal_handler.setFormatter(formatter)
 
+    # File Handler
     log_path = Path(__file__).resolve().parent / "pipeline.log"
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
