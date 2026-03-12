@@ -1,0 +1,5 @@
+venv
+shutdown.db
+pipeline.log
+__pycache__
+.ruff_cache
