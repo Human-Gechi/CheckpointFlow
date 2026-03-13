@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pipeline Run ALERT!</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f8f8f8;
+            margin: 40px;
+        }
+        .alert-box {
+            border-radius: 8px;
+            padding: 24px 32px;
+            max-width: 400px;
+            margin: 40px auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            text-align: center;
+            border: 2px solid;
+        }
+        /* Box backgrounds and borders */
+        .box-failed {
+            background: #fff3f3;
+            border-color: #ffcccc;
+        }
+        .box-completed {
+            background: #e8f5e9;
+            border-color: #81c784;
+        }
+        .box-paused {
+            background: #e3f2fd;
+            border-color: #64b5f6;
+        }
+        /* Title colors */
+        .title-failed {
+            color: #d8000c;
+        }
+        .title-completed {
+            color: #388e3c;
+        }
+        .title-paused {
+            color: #1976d2;
+        }
+        /* Status text colors */
+        .status-failed {
+            color: #d8000c;
+            font-weight: bold;
+            font-size: 1.2em;
+            letter-spacing: 1px;
+        }
+        .status-completed {
+            color: #388e3c;
+            font-weight: bold;
+            font-size: 1.2em;
+            letter-spacing: 1px;
+        }
+        .status-paused {
+            color: #1976d2;
+            font-weight: bold;
+            font-size: 1.2em;
+            letter-spacing: 1px;
+        }
+        .last-id {
+            color: #555;
+            font-size: 1em;
+        }
+    </style>
+</head>
+<body>
+    <div class="alert-box
+        {% if status == 'FAILED' %}
+            box-failed
+        {% elif status == 'COMPLETED' %}
+            box-completed
+        {% elif status == 'PAUSED' %}
+            box-paused
+        {% else %}
+            box-failed
+        {% endif %}
+    ">
+        <div class="
+            alert-title
+            {% if status == 'FAILED' %}
+                title-failed
+            {% elif status == 'COMPLETED' %}
+                title-completed
+            {% elif status == 'PAUSED' %}
+                title-paused
+            {% else %}
+                title-failed
+            {% endif %}
+        ">
+            <h1>🚨 Pipeline Run ALERT!</h1>
+        </div>
+        <div>
+            <h3>Pipeline run status:
+            <span class="
+                {% if status == 'FAILED' %}
+                    status-failed
+                {% elif status == 'COMPLETED' %}
+                    status-completed
+                {% elif status == 'PAUSED' %}
+                    status-paused
+                {% else %}
+                    status-failed
+                {% endif %}
+            ">
+                {{ status }} </h3>
+            </span>
+        </div>
+        <div class="last-id">
+            <b>Last processed ID: {{ last_id }}</b>
+        </div>
+    </div>
+</body>
+</html>

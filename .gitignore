@@ -5,3 +5,4 @@ __pycache__
 .ruff_cache
 fresh.db
 test.db
+.env

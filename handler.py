@@ -1,12 +1,22 @@
 import argparse
+import os
 import signal
+import smtplib
 import sqlite3
+import ssl
+import sys
 import time
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from enum import StrEnum
 
 import psycopg2
+from dotenv import load_dotenv
+from jinja2 import Template
 
 from log import logger
+
+load_dotenv()
 
 running = True
 interrupted = False
@@ -51,7 +61,7 @@ def conn_table(db_path: str):
     Function to create table
 
     Parameters:
-        db_path : Name of sqlite3/ postgres db database 
+        db_path : Name of sqlite3/ postgres db database
     """
     try:
         if is_postgres_url(db_path):
@@ -59,14 +69,14 @@ def conn_table(db_path: str):
             conn = psycopg2.connect(db_path)
             cur = conn.cursor()
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS pipeline_state (
-                    id SERIAL PRIMARY KEY,
-                    last_processed_id INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('PAUSED', 'RUNNING', 'FAILED', 'COMPLETED')),
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    session_notes TEXT
-                );
-            """)
+                    CREATE TABLE IF NOT EXISTS pipeline_state (
+                        id SERIAL PRIMARY KEY,
+                        last_processed_id INTEGER NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('PAUSED', 'RUNNING', 'FAILED', 'COMPLETED')),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        session_notes TEXT
+                    );
+                """)
             conn.commit()
             logger.info("✅ Tables created or already exist (PostgreSQL)")
             conn.close()
@@ -86,9 +96,11 @@ def conn_table(db_path: str):
             connection.commit()
             logger.info("✅ Tables created or aleady exists (SQLite)")
             connection.close()
-    except Exception as e:
+    except psycopg2.OperationalError as e:
         logger.error(f"❌ Table not created: {e}")
         raise
+    except sqlite3.OperationalError as e:
+        logger.error(f"❌ Table not created: {e}")
 
 
 def get_last_processed_id(db_path: str) -> int:
@@ -109,6 +121,7 @@ def get_last_processed_id(db_path: str) -> int:
 
 
 def save_state(last_id: int, status: PipelineStatus, db_path: str, note: str | None = None):
+    pass
     if is_postgres_url(db_path):
         conn = psycopg2.connect(db_path)
         cur = conn.cursor()
@@ -143,9 +156,23 @@ if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, signal_interrupt)
 
 
-def send_email():
+def send_email(server: str, sender: str, recipient: object, password: str, last_id: int, status: PipelineStatus):
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(server, 465, context=context) as email:
+        email.login(sender, password)
 
-    pass
+        msg = MIMEMultipart("alternative")
+        msg["From"] = sender
+        msg["To"] = recipient
+        msg["Subject"] = "PIPELINE RUN Alert"
+
+        with open("index.html", encoding="utf-8") as file:
+            html_content = Template(file.read())
+            rendered_content = html_content.render(last_id=last_id, status=status)
+            msg.attach(MIMEText(rendered_content, "html"))
+
+            email.sendmail(sender, recipient, msg.as_string())
+            logger.info(" 🚀 Pipeline status email sent")
 
 
 def state_handoff(
@@ -156,61 +183,78 @@ def state_handoff(
     resume: bool,
 ):
     global running, interrupted
-
     running = True
     interrupted = False
-    failed = False
-
-    start_id = get_last_processed_id(db_path) if resume else 0
-    current_id = start_id
-    target_id = start_id + max_records
-
-    logger.info(f"📌 Starting from record {start_id}, state = {PipelineStatus.RUNNING}")
 
     max_retries = 3
     base_delay = 1
+
+    current_id = get_last_processed_id(db_path) if resume else 0
+    target_id = max_records + current_id
+    failed = False
 
     while running and current_id < target_id:
         for attempt in range(1, max_retries + 1):
             try:
                 batch_start = current_id + 1
                 batch_end = min(current_id + batch_size, target_id)
-                logger.info(f" 🚀 Processing records {batch_start} to {batch_end} (attempt {attempt})")
+                logger.info(f"🚀 Processing records {batch_start} to {batch_end} (attempt {attempt})")
                 time.sleep(sleep_seconds)
 
                 current_id = batch_end
-                break
 
+                break
             except Exception as e:
-                logger.exception(f"❌ Attempt {attempt} failed")
+                logger.error(f"❌ Attempt {attempt} failed: {e}")
                 if attempt == max_retries:
-                    logger.error(f"DB insertion failed after {max_retries} attempts: {e}")
                     failed = True
                     running = False
-                    break
                 else:
                     backoff = base_delay * (2 ** (attempt - 1))
                     logger.warning(f"⚠️ Retrying in {backoff}s")
                     time.sleep(backoff)
+        else:
+            continue
 
-        if interrupted or failed:
+        if interrupted:
             break
 
-    if interrupted:
-        final_status = PipelineStatus.PAUSED
-        note = "Interrupted by signal"
-    elif failed:
-        final_status = PipelineStatus.FAILED
-        note = "Unhandled exception"
-    elif current_id >= target_id:
-        final_status = PipelineStatus.COMPLETED
-        note = "Completed normally"
-    else:
-        final_status = PipelineStatus.FAILED
-        note = "Stopped before target"
+        if current_id < target_id and not interrupted:
+            save_state(batch_end, PipelineStatus.RUNNING, db_path, note=f"Processed batch {batch_start}-{batch_end}")
 
-    save_state(current_id, final_status, db_path, note)
-    logger.info(f" 📌 Run ended at record {current_id} with status={final_status.value}")
+    # Final status of run
+    if interrupted:
+        save_state(current_id, PipelineStatus.PAUSED, db_path, note="Interrupted by signal")
+        send_email(
+            "smtp.gmail.com",
+            os.getenv("SENDER"),
+            os.getenv("RECIPIENT"),
+            os.getenv("PASSWORD"),
+            current_id,
+            PipelineStatus.PAUSED,
+        )
+        logger.info(f" 📌 Run ended at record {current_id} with status=PAUSED")
+    elif current_id >= target_id:
+        save_state(current_id, PipelineStatus.COMPLETED, db_path, note="Completed normally")
+        send_email(
+            "smtp.gmail.com",
+            os.getenv("SENDER"),
+            os.getenv("RECIPIENT"),
+            os.getenv("PASSWORD"),
+            current_id,
+            PipelineStatus.COMPLETED,
+        )
+        logger.info(f" 📌 Run ended at record {current_id} with status=COMPLETED")
+    elif failed:
+        send_email(
+            "smtp.gmail.com",
+            os.getenv("SENDER"),
+            os.getenv("RECIPIENT"),
+            os.getenv("PASSWORD"),
+            current_id,
+            PipelineStatus.FAILED,
+        )
+        sys.exit(1)
 
 
 def main():
