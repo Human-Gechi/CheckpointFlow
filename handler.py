@@ -4,6 +4,8 @@ import sqlite3
 import time
 from enum import StrEnum
 
+import psycopg2
+
 from log import logger
 
 running = True
@@ -40,55 +42,84 @@ def parse_args():
     return parser.parse_args()
 
 
+def is_postgres_url(db_path: str) -> bool:
+    return db_path.startswith("postgresql://") or db_path.startswith("postgres://")
+
+
 def conn_table(db_path: str):
     """
     Function to create table
 
     Parameters:
-        db_path : Name of sqlite3 database
+        db_path : Name of sqlite3/ postgres db database 
     """
-    connection = None
     try:
-        connection = sqlite3.connect(db_path)
-        cur = connection.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_state (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                last_processed_id INTEGER NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('PAUSED', 'RUNNING', 'FAILED', 'COMPLETED')),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                session_notes TEXT
-            );
-        """)
-        connection.commit()
-        logger.info("✅ Tables created or aleady exists ")
-    except sqlite3.Error:
-        logger.exception("❌ Table creation failed")
-        raise
-    finally:
-        if connection is not None:
+        if is_postgres_url(db_path):
+            conn = None
+            conn = psycopg2.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pipeline_state (
+                    id SERIAL PRIMARY KEY,
+                    last_processed_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PAUSED', 'RUNNING', 'FAILED', 'COMPLETED')),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    session_notes TEXT
+                );
+            """)
+            conn.commit()
+            logger.info("✅ Tables created or already exist (PostgreSQL)")
+            conn.close()
+        else:
+            connection = None
+            connection = sqlite3.connect(db_path)
+            cur = connection.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pipeline_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    last_processed_id INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PAUSED', 'RUNNING', 'FAILED', 'COMPLETED')),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    session_notes TEXT
+                );
+            """)
+            connection.commit()
+            logger.info("✅ Tables created or aleady exists (SQLite)")
             connection.close()
+    except Exception as e:
+        logger.error(f"❌ Table not created: {e}")
+        raise
 
 
 def get_last_processed_id(db_path: str) -> int:
-    connection = None
-    try:
+    if is_postgres_url(db_path):
+        conn = psycopg2.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT last_processed_id FROM pipeline_state ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    else:
         connection = sqlite3.connect(db_path)
         cur = connection.cursor()
         cur.execute("SELECT last_processed_id FROM pipeline_state ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
+        connection.close()
         return row[0] if row else 0
-    except sqlite3.Error:
-        logger.exception("❌ Failed to fetch last_processed_id")
-        return 0
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def save_state(last_id: int, status: PipelineStatus, db_path: str, note: str | None = None):
-    connection = None
-    try:
+    if is_postgres_url(db_path):
+        conn = psycopg2.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO pipeline_state (last_processed_id, status, session_notes) VALUES (%s, %s, %s)",
+            (last_id, status.value, note),
+        )
+        conn.commit()
+        logger.info(f"📌 Saved state: status={status.value}, last_id={last_id} (PostgreSQL)")
+        conn.close()
+    else:
         connection = sqlite3.connect(db_path)
         cur = connection.cursor()
         cur.execute(
@@ -96,12 +127,8 @@ def save_state(last_id: int, status: PipelineStatus, db_path: str, note: str | N
             (last_id, status.value, note),
         )
         connection.commit()
-        logger.info(f"📌 Saved state: status={status.value}, last_id={last_id}")
-    except sqlite3.Error:
-        logger.exception("❌Failed to save state")
-    finally:
-        if connection is not None:
-            connection.close()
+        logger.info(f"📌 Saved state: status={status.value}, last_id={last_id} (SQLite)")
+        connection.close()
 
 
 def signal_interrupt(sig, frame):
@@ -114,6 +141,11 @@ def signal_interrupt(sig, frame):
 signal.signal(signal.SIGINT, signal_interrupt)
 if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, signal_interrupt)
+
+
+def send_email():
+
+    pass
 
 
 def state_handoff(
@@ -133,7 +165,7 @@ def state_handoff(
     current_id = start_id
     target_id = start_id + max_records
 
-    logger.info(f"📌 Starting from record {start_id}")
+    logger.info(f"📌 Starting from record {start_id}, state = {PipelineStatus.RUNNING}")
 
     max_retries = 3
     base_delay = 1
