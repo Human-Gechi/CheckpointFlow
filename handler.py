@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import signal
 import smtplib
@@ -11,6 +12,7 @@ from email.mime.text import MIMEText
 from enum import StrEnum
 
 import psycopg2
+from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from jinja2 import Template
 
@@ -52,7 +54,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def is_postgres_url(db_path: str) -> bool:
+def _is_postgres_url(db_path: str) -> bool:
     return db_path.startswith("postgresql://") or db_path.startswith("postgres://")
 
 
@@ -64,7 +66,7 @@ def conn_table(db_path: str):
         db_path : Name of sqlite3/ postgres db database
     """
     try:
-        if is_postgres_url(db_path):
+        if _is_postgres_url(db_path):
             conn = None
             conn = psycopg2.connect(db_path)
             cur = conn.cursor()
@@ -104,7 +106,7 @@ def conn_table(db_path: str):
 
 
 def get_last_processed_id(db_path: str) -> int:
-    if is_postgres_url(db_path):
+    if _is_postgres_url(db_path):
         conn = psycopg2.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT last_processed_id FROM pipeline_state ORDER BY id DESC LIMIT 1")
@@ -122,7 +124,7 @@ def get_last_processed_id(db_path: str) -> int:
 
 def save_state(last_id: int, status: PipelineStatus, db_path: str, note: str | None = None):
     pass
-    if is_postgres_url(db_path):
+    if _is_postgres_url(db_path):
         conn = psycopg2.connect(db_path)
         cur = conn.cursor()
         cur.execute(
@@ -284,4 +286,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    scheduler = BlockingScheduler()
+    scheduler.add_job(main, "interval", seconds=30, id="Checkflow")
+    try:
+        scheduler.start()
+    except contextlib.suppress(SystemError, KeyboardInterrupt):
+        pass
